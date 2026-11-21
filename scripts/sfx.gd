@@ -10,12 +10,20 @@ var players: Array[AudioStreamPlayer] = []
 var next_player := 0
 var music: AudioStreamPlayer
 
+const OPTIONS_PATH := "user://opcoes.cfg"
+const BUS_MUSIC := "Musica"
+const BUS_SFX := "Efeitos"
+## Volume de 0 a 1 de cada canal (salvo em user://opcoes.cfg).
+var volume := {BUS_MUSIC: 0.8, BUS_SFX: 0.8}
+
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	_setup_buses()
+	_load_options()
 	for i in 10:
 		var p := AudioStreamPlayer.new()
-		p.bus = "Master"
+		p.bus = BUS_SFX
 		add_child(p)
 		players.append(p)
 	for i in 4:
@@ -45,6 +53,49 @@ func play(key: String, pitch := 1.0, volume_db := 0.0) -> void:
 	p.play()
 
 
+# ---------- volume ----------
+
+func _setup_buses() -> void:
+	for bus_name in [BUS_MUSIC, BUS_SFX]:
+		if AudioServer.get_bus_index(bus_name) == -1:
+			AudioServer.add_bus()
+			var idx := AudioServer.bus_count - 1
+			AudioServer.set_bus_name(idx, bus_name)
+			AudioServer.set_bus_send(idx, "Master")
+
+
+func get_volume(bus_name: String) -> float:
+	return volume.get(bus_name, 1.0)
+
+
+## Muda o volume (0 a 1) de um canal. Em 0 o canal fica mudo.
+func set_volume(bus_name: String, v: float) -> void:
+	v = clamp(v, 0.0, 1.0)
+	volume[bus_name] = v
+	var idx := AudioServer.get_bus_index(bus_name)
+	if idx == -1:
+		return
+	AudioServer.set_bus_mute(idx, v <= 0.001)
+	AudioServer.set_bus_volume_db(idx, linear_to_db(max(v, 0.001)))
+
+
+func save_options() -> void:
+	var cf := ConfigFile.new()
+	cf.load(OPTIONS_PATH)
+	cf.set_value("audio", "musica", volume[BUS_MUSIC])
+	cf.set_value("audio", "efeitos", volume[BUS_SFX])
+	cf.save(OPTIONS_PATH)
+
+
+func _load_options() -> void:
+	var cf := ConfigFile.new()
+	if cf.load(OPTIONS_PATH) == OK:
+		volume[BUS_MUSIC] = float(cf.get_value("audio", "musica", volume[BUS_MUSIC]))
+		volume[BUS_SFX] = float(cf.get_value("audio", "efeitos", volume[BUS_SFX]))
+	for bus_name in volume:
+		set_volume(bus_name, volume[bus_name])
+
+
 func _start_music() -> void:
 	# Usa a música do Suno se existir em assets/music (tema.mp3 ou tema.ogg).
 	for path in ["res://assets/music/tema.ogg", "res://assets/music/tema.mp3"]:
@@ -55,6 +106,7 @@ func _start_music() -> void:
 			music = AudioStreamPlayer.new()
 			music.stream = stream
 			music.volume_db = -10.0
+			music.bus = BUS_MUSIC
 			add_child(music)
 			music.play()
 			return

@@ -21,6 +21,9 @@ var monsters: Array = []
 var preview := {}      # {"slot": Vector2i, "ok": bool}
 var rings: Array = []  # ondas elementais: {"pos": Vector2, "elem": int, "t": float}
 var shield := false
+var bubble := false   # Bolha do siri ligada: bolha em volta da ilha toda
+var coco_marks: Array = []  # cocos do coqueiro caindo: {"cell": Vector2i, "t": s até cair, "from": Vector2 local}
+var outfit := ""            # visual do Tobé liberado no álbum
 var powers_on := {}        # poderes ligados (para desenhar): {"ima": bool, "soco": bool, "conserto": bool}
 
 
@@ -29,6 +32,7 @@ func reset() -> void:
 	items.clear()
 	monsters.clear()
 	rings.clear()
+	coco_marks.clear()
 	preview = {}
 	pivot = Vector2.ZERO
 	spin_dir = 0
@@ -236,9 +240,18 @@ func slot_color(slot: Vector2i, inc) -> int:
 	return -1
 
 
-func add_cell(slot: Vector2i, elem: int, edges: Array) -> void:
-	cells[slot] = {"elem": elem, "edges": edges, "born": game_time}
+func add_cell(slot: Vector2i, elem: int, edges: Array, piece_life := G.PIECE_LIFE) -> void:
+	cells[slot] = {"elem": elem, "edges": edges, "born": game_time, "life": piece_life}
 	recompute_pivot()
+
+
+## Quanto tempo a peça dura (60 s normal; 180 s a ilha de uma cor só).
+func life(c: Vector2i) -> float:
+	return float(cells[c].get("life", G.PIECE_LIFE))
+
+
+func is_mono(c: Vector2i) -> bool:
+	return life(c) > G.PIECE_LIFE
 
 
 func age(c: Vector2i) -> float:
@@ -246,7 +259,7 @@ func age(c: Vector2i) -> float:
 
 
 func remaining(c: Vector2i) -> float:
-	return G.PIECE_LIFE - age(c)
+	return life(c) - age(c)
 
 
 ## Peça rachada (prestes a afundar): o Tobé não anda por cima dela.
@@ -338,7 +351,7 @@ func _cell_rect(c: Vector2i, grow: float) -> Rect2:
 
 
 func _sink_k(c: Vector2i) -> float:
-	return clamp((age(c) - (G.PIECE_LIFE - 10.0)) / 10.0, 0.0, 1.0)
+	return clamp((age(c) - (life(c) - 10.0)) / 10.0, 0.0, 1.0)
 
 
 func _draw() -> void:
@@ -386,6 +399,9 @@ func _draw() -> void:
 			if cells.has(c + d):
 				continue
 			G.draw_edge_band(self, center, d, G.TILE * 0.5 - 2.0 - k * 12.0, edge_color(c, d))
+		if is_mono(c) and k <= 0.0:
+			# ilha de uma cor só: anel brilhante em volta do símbolo
+			draw_arc(center + Vector2(0, 2), 19 + sin(t * 3.0) * 2.0, 0, TAU, 24, Color(1, 1, 1, 0.85), 3, true)
 		if e >= 0:
 			G.draw_symbol(self, e, center + Vector2(0, 2), 11, G.ELEM[e].lightened(0.25), G.ELEM_DARK[e], 3)
 		else:
@@ -393,10 +409,11 @@ func _draw() -> void:
 	# rachaduras e água subindo nas peças velhas
 	for c in cells:
 		var a := age(c)
-		if a < G.CRACK_AT:
+		var crack_at := life(c) - G.UNSAFE_LEFT
+		if a < crack_at:
 			continue
 		var center := cell_to_local(Vector2(c))
-		var p := (a - G.CRACK_AT) / (G.PIECE_LIFE - G.CRACK_AT)
+		var p := (a - crack_at) / G.UNSAFE_LEFT
 		var crack := Color(0.35, 0.22, 0.1, 0.4 + p * 0.5)
 		var pts := PackedVector2Array([center + Vector2(-22, -18), center + Vector2(-8, -6), center + Vector2(-14, 6),
 			center + Vector2(2, 14), center + Vector2(-2, 24)])
@@ -459,6 +476,51 @@ func _draw() -> void:
 			var hop: float = -abs(sin(a.anim * 10.0)) * 5.0 if a.moving else 0.0
 			G.draw_monster(self, a.kind, Vector2(0, 8 + hop), G.TILE * 0.42, a.weak, a.anim)
 		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+	_draw_coco_marks()
+	if bubble:
+		_draw_bubble(t)
+
+
+## Sombra no chão onde o coco vai cair (cresce e fica vermelha) e o coco voando até lá.
+func _draw_coco_marks() -> void:
+	for m in coco_marks:
+		var lp := cell_to_local(Vector2(m["cell"]))
+		var k: float = clamp(1.0 - m["t"] / G.PALM_WARN, 0.0, 1.0)
+		draw_set_transform(lp, -rotation, Vector2.ONE)
+		draw_circle(Vector2(0, 10), 10 + 22 * k, Color(0.6, 0.05, 0.05, 0.25 + 0.25 * k))
+		draw_arc(Vector2(0, 10), 10 + 22 * k, 0, TAU, 24, Color(1, 0.3, 0.3, 0.8), 3, true)
+		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+		var from: Vector2 = m["from"]
+		var p := from.lerp(lp, k) + Vector2(0, -sin(k * PI) * 140.0).rotated(-rotation)
+		G.draw_coconut(self, p, 12)
+
+
+## Bolha do siri: cobre a ilha toda (não gira junto, o brilho fica sempre em cima à esquerda).
+func _draw_bubble(t: float) -> void:
+	var c := cell_to_local(pivot_center())
+	var r := (bubble_radius() + sin(t * 3.0) * 0.04) * G.TILE
+	draw_set_transform(c, -rotation, Vector2.ONE)
+	draw_circle(Vector2.ZERO, r, Color(0.6, 0.92, 1.0, 0.13))
+	draw_arc(Vector2.ZERO, r, 0, TAU, 64, Color(0.75, 0.96, 1.0, 0.75), 5, true)
+	draw_arc(Vector2.ZERO, r - 12, PI * 1.1, PI * 1.4, 16, Color(1, 1, 1, 0.8), 7, true)
+	draw_arc(Vector2.ZERO, r - 12, PI * 1.5, PI * 1.56, 6, Color(1, 1, 1, 0.8), 7, true)
+	draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+
+
+## Centro das peças (em células) e o raio da bolha que cobre todas.
+func pivot_center() -> Vector2:
+	var sum := Vector2.ZERO
+	for c in cells:
+		sum += Vector2(c)
+	return sum / max(1, cells.size())
+
+
+func bubble_radius() -> float:
+	var cen := pivot_center()
+	var r := 0.0
+	for c in cells:
+		r = max(r, (Vector2(c) - cen).length())
+	return r + 1.05
 
 
 func sand_dark_for(k: float) -> Color:
@@ -486,8 +548,12 @@ func _draw_tobe(a: Actor, t: float) -> void:
 		var size := Vector2(sz.x * k * a.facing / breathe, sz.y * k * breathe)
 		var pos := Vector2(-size.x * 0.5, 22 - abs(size.y) + hop)
 		draw_texture_rect(tx, Rect2(pos, size), false)
+		if outfit != "":
+			G.draw_outfit(self, outfit, Rect2(pos, size))
 	else:
 		G.outlined_circle(self, Vector2(0, hop), 22, Color("9bd27a"), Color("3f7f2c"), 6)
+		if outfit != "":
+			G.draw_outfit(self, outfit, Rect2(Vector2(-24, -26 + hop), Vector2(48, 60)))
 	if shield:
 		draw_arc(Vector2(0, -8 + hop), 36, 0, TAU, 32, Color(0.5, 0.85, 1.0, 0.7), 4, true)
 	# poderes ligados aparecem em cima da cabeça do Tobé
@@ -496,6 +562,12 @@ func _draw_tobe(a: Actor, t: float) -> void:
 		G.draw_power(self, "soco", Vector2(30, -66 + hop + sin(t * 10.0) * 4.0), 15)
 	if powers_on.get("conserto", false):
 		G.draw_power(self, "conserto", Vector2(-30, -66 + hop), 15)
+	if powers_on.get("estrela", false):
+		# estrela-do-mar: anel com as 4 cores girando e a estrela em cima da cabeça
+		for i in 4:
+			var a0 := t * 5.0 + i * TAU / 4.0
+			draw_arc(Vector2(0, -8 + hop), 44, a0, a0 + TAU / 4.0 - 0.15, 10, G.ELEM[i], 6, true)
+		G.draw_power(self, "estrela", Vector2(0, -84 + hop + sin(t * 6.0) * 4.0), 16)
 	if a.stun > 0.0:
 		for i in 3:
 			var ang := t * 6.0 + i * TAU / 3.0
